@@ -6,7 +6,8 @@ A:
 
 **Q2:** Workload Identity is enabled. Explain how a pod authenticates to GCP Secret Manager without a service account key file. What is the chain of trust?
 
-A:
+A: The application pod does not access Secret Manager directly. The medi Kubernetes ServiceAccount is created from our manifest, and the SecretSync controller authenticates as default/medi through Workload. Identity Federation using a short-lived token issued and signed by Kubernetes.
+The SecretProviderClass identifies the GCP secret to read, while the secret-level roles/secretmanager.secretAccessor IAM binding authorizes that identity to access it. SecretSync then creates the namespaced Kubernetes Secret mounted by the pod, so no long-lived Google service-account key is stored or mounted.
 
 ---
 
@@ -20,7 +21,9 @@ A:
 
 **Q4:** Your deployment has 3 replicas. During a rolling update the new pod immediately starts returning 500s. Walk through exactly what happens given your readiness probe configuration. What is the state of the old pods? Does the HPA react?
 
-A:
+A: If the 500 response also causes /readyz to fail, the new surge pod remains Running but NotReady and is not added to the Service endpoints. With maxUnavailable - 0 and maxSurge -1, k8s keeps retrying the readiness probe while all three old replicas remain Ready and continue serving traffic.
+
+After the 600-second progress deadline, the rollout is marked failed, but k8s does not automatically roll it back and the old ReplicaSet remains available. The HPA does not react directly to HTTP errors because it scales only on CPU and memory. It reacts only if those resource targets are exceeded. If application requests return 500 while /readyz still returns 200, Kubernetes considers the new pod Ready, sends traffic to it, and continues replacing the old pods.
 
 ---
 
@@ -34,7 +37,10 @@ A:
 
 **Q6:** A colleague suggests setting CPU limit to 4 cores so the service is never throttled. What is wrong with this in a shared GKE cluster? What would you configure instead and why?
 
-A:
+A: A four-core CPU limit is only a maximum usage, not a reservation, so it neither guarantees four cores nor prevents throttling. Kubernetes schedules pods
+based on CPU requests rather than limits if requests are too low, several pods with large limits can be placed on the same node and compete for CPU,
+reducing workload density and increasing infrastructure cost. I would determine the CPU request from load tests and observed sustained, then set a smaller
+limit with reasonable values. The HPA target should be calculated from that request, and the final values should be validated using CPU utilization, throttling, latency etc..
 
 ---
 

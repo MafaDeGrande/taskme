@@ -1,5 +1,5 @@
 module "gke" {
-  source  = "terraform-google-modules/kubernetes-engine/google//modules/private-cluster"
+  source  = "terraform-google-modules/kubernetes-engine/google//modules/beta-private-cluster"
   version = "~> 44.3"
 
   project_id = var.project_id
@@ -25,6 +25,10 @@ module "gke" {
 
   # Monitoring and logging
   monitoring_enable_managed_prometheus = true
+
+  # Managed Secret Manager CSI provider
+  enable_secret_manager_addon = true
+  enable_secret_sync          = true
 
   # Binary authorization
   enable_binary_authorization = true
@@ -65,7 +69,7 @@ module "gke" {
     },
     {
       name         = "application-pool"
-      machine_type = terraform.workspace == "production" ? "e2-standard-4" : "e2-standard-2"
+      machine_type = terraform.workspace == "production" ? "e2-custom-8-16384" : "e2-standard-2"
       node_locations = terraform.workspace == "production" ? (
         "${var.region}-a,${var.region}-b,${var.region}-c"
       ) : "${var.region}-a"

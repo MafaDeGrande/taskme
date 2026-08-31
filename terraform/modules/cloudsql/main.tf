@@ -120,3 +120,13 @@ resource "google_secret_manager_secret_version" "db_credentials" {
     connection_string = "postgresql://${local.user_name}:${random_password.db_password.result}@${module.postgresql.private_ip_address}:5432/${local.db_name}"
   })
 }
+
+data "google_project" "current" {
+  project_id = var.project_id
+}
+resource "google_secret_manager_secret_iam_member" "medi" {
+  project   = var.project_id
+  secret_id = google_secret_manager_secret.db_credentials.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "principal://iam.googleapis.com/projects/${data.google_project.current.number}/locations/global/workloadIdentityPools/${var.project_id}.svc.id.goog/subject/ns/default/sa/medi"
+}

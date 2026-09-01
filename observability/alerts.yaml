@@ -1,0 +1,77 @@
+groups:
+  - name: medi-alerts
+    interval: 30s
+    rules:
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(http_requests_total{job="medi",status=~"5.."}[5m]))
+          /
+          clamp_min(sum(rate(http_requests_total{job="medi"}[5m])), 1e-9)
+          > 0.01
+        for: 5m
+        labels:
+          severity: critical
+          service: medi
+        annotations:
+          summary: Medi error rate is above 1%
+          description: The five-minute 5xx ratio has remained above 1% for five minutes. Current ratio is {{ $value }}.
+          runbook_url: https://github.com/MafaDeGrande/taskme/blob/main/runbooks/high-error-rate.md
+
+      - alert: HighP99Latency
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (le) (rate(http_request_duration_seconds_bucket{job="medi"}[5m]))
+          ) > 1
+        for: 10m
+        labels:
+          severity: warning
+          service: medi
+        annotations:
+          summary: Medi p99 latency is above one second
+          description: The estimated 99th percentile latency has remained above one second for ten minutes. Current p99 is {{ $value }} seconds.
+          runbook_url: https://github.com/MafaDeGrande/taskme/blob/main/runbooks/high-latency.md
+
+      - alert: ErrorBudgetBurn
+        expr: medi:slo_availability:burn_rate_1h > 5
+        labels:
+          severity: critical
+          service: medi
+        annotations:
+          summary: Medi is burning its availability budget faster than 5x
+          description: The availability error budget burn rate over the last hour is {{ $value }}x.
+          runbook_url: https://github.com/MafaDeGrande/taskme/blob/main/runbooks/error-budget-burn.md
+
+      - alert: PodCrashLooping
+        expr: |
+          increase(
+            kube_pod_container_status_restarts_total{
+              namespace="default",
+              pod=~"medi-.*"
+            }[15m]
+          ) > 3
+        labels:
+          severity: warning
+          service: medi
+        annotations:
+          summary: A Medi container restarted more than three times
+          description: Container {{ $labels.container }} in pod {{ $labels.pod }} restarted more than three times in the last 15 minutes.
+          runbook_url: https://github.com/MafaDeGrande/taskme/blob/main/runbooks/pod-crash-looping.md
+
+      - alert: DatabaseConnectionPoolNearExhaustion
+        expr: |
+          (
+            db_connection_pool_max_connections{job="medi"}
+            - db_connection_pool_in_use_connections{job="medi"}
+          )
+          /
+          clamp_min(db_connection_pool_max_connections{job="medi"}, 1)
+          < 0.10
+        for: 5m
+        labels:
+          severity: critical
+          service: medi
+        annotations:
+          summary: Medi database connection pool has less than 10% capacity
+          description: The database connection pool has had less than 10% available capacity for five minutes. Current available ratio is {{ $value }}.
+          runbook_url: https://github.com/MafaDeGrande/taskme/blob/main/runbooks/database-connection-pool.md

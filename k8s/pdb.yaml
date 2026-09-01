@@ -5,7 +5,7 @@ metadata:
   labels:
     app.kubernetes.io/name: medi
 spec:
-  minAvailable: 2
+  minAvailable: ${PDB_MIN_AVAILABLE}
   selector:
     matchLabels:
       app.kubernetes.io/name: medi

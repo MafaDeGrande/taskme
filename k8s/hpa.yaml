@@ -9,8 +9,8 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: medi
-  minReplicas: 3
-  maxReplicas: 10
+  minReplicas: ${HPA_MIN_REPLICAS}
+  maxReplicas: ${HPA_MAX_REPLICAS}
   metrics:
     - type: Resource
       resource:

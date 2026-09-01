@@ -1,0 +1,49 @@
+groups:
+  - name: medi-slo-recording
+    interval: 1m
+    rules:
+      - record: medi:slo_availability:ratio_30d
+        expr: |
+          1 - (
+            sum(rate(http_requests_total{job="medi",status=~"5.."}[30d]))
+            /
+            clamp_min(sum(rate(http_requests_total{job="medi"}[30d])), 1e-9)
+          )
+        labels:
+          service: medi
+          objective: "0.999"
+
+      - record: medi:slo_latency_lt_500ms:ratio_30d
+        expr: |
+          sum(rate(http_request_duration_seconds_bucket{job="medi",le="0.5"}[30d]))
+          /
+          clamp_min(sum(rate(http_request_duration_seconds_count{job="medi"}[30d])), 1e-9)
+        labels:
+          service: medi
+          objective: "0.95"
+
+      - record: medi:slo_availability:burn_rate_1h
+        expr: |
+          (
+            sum(rate(http_requests_total{job="medi",status=~"5.."}[1h]))
+            /
+            clamp_min(sum(rate(http_requests_total{job="medi"}[1h])), 1e-9)
+          ) / 0.001
+        labels:
+          service: medi
+
+      - record: medi:slo_availability:error_budget_remaining_percent_30d
+        expr: |
+          clamp_max(
+            clamp_min(
+              100 * (1 - (
+                sum(rate(http_requests_total{job="medi",status=~"5.."}[30d]))
+                /
+                clamp_min(sum(rate(http_requests_total{job="medi"}[30d])), 1e-9)
+              ) / 0.001),
+              0
+            ),
+            100
+          )
+        labels:
+          service: medi

@@ -6,7 +6,7 @@ metadata:
     app.kubernetes.io/name: medi
     app.kubernetes.io/component: api
 spec:
-  replicas: 3
+  replicas: ${DEPLOYMENT_REPLICAS}
   revisionHistoryLimit: 5
   minReadySeconds: 10
   progressDeadlineSeconds: 600
@@ -48,7 +48,7 @@ spec:
               app.kubernetes.io/component: api
       containers:
         - name: medi
-          image: us-central1-docker.pkg.dev/medi/medi/medi:GIT_SHA
+          image: ${IMAGE_URI}
           imagePullPolicy: IfNotPresent
           ports:
             - name: http

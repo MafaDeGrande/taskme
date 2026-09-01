@@ -1,0 +1,181 @@
+name: CI/CD
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+
+env:
+  GCP_PROJECT_ID: medi
+  GCP_REGION: us-central1
+  IMAGE_URI: us-central1-docker.pkg.dev/medi/medi/medi:${{ github.sha }}
+  TF_IN_AUTOMATION: "true"
+
+jobs:
+  ci:
+    name: Lint, test and build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Lint and test
+        run: |
+          go mod download
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test -race ./...
+      - name: Build image
+        run: docker build -t "${IMAGE_URI}" .
+      - name: Authenticate to GCP
+        if: github.event_name == 'push'
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v3
+        if: github.event_name == 'push'
+      - name: Push image
+        if: github.event_name == 'push'
+        run: |
+          gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
+          docker push "${IMAGE_URI}"
+
+  terraform-plan:
+    name: Terraform plan
+    needs: ci
+    runs-on: [self-hosted, linux, gcp-private]
+    defaults:
+      run:
+        working-directory: terraform
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+      - name: Plan staging and production
+        run: |
+          terraform init -input=false -backend-config=config/backend.hcl
+          for environment in staging production; do
+            terraform workspace select "${environment}"
+            terraform plan -out="tfplan-${environment}" | tee -a plan.txt
+          done
+      - name: Post required PR plan comment
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const plan = require('fs').readFileSync('terraform/plan.txt', 'utf8').slice(-60000)
+            await github.rest.issues.createComment({
+              ...context.repo, issue_number: context.issue.number,
+              body: `## Terraform plan\n\n\`\`\`terraform\n${plan}\n\`\`\``
+            })
+      - name: Save plans for apply
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plans
+          path: terraform/tfplan-*
+
+  terraform-apply:
+    name: Terraform apply
+    if: github.event_name == 'push'
+    needs: terraform-plan
+    runs-on: [self-hosted, linux, gcp-private]
+    environment: terraform
+    defaults:
+      run:
+        working-directory: terraform
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: terraform-plans
+          path: terraform
+      - name: Apply staging and production
+        run: |
+          terraform init -input=false -backend-config=config/backend.hcl
+          for environment in staging production; do
+            terraform workspace select "${environment}"
+            terraform apply -input=false "tfplan-${environment}"
+          done
+
+  deploy-staging:
+    name: Deploy and smoke test staging
+    if: github.event_name == 'push'
+    needs: terraform-apply
+    runs-on: [self-hosted, linux, gcp-private]
+    env:
+      ENVIRONMENT: staging
+      DEPLOYMENT_REPLICAS: 1
+      HPA_MIN_REPLICAS: 1
+      HPA_MAX_REPLICAS: 2
+      PDB_MIN_AVAILABLE: 1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+      - name: Deploy
+        run: |
+          gcloud container clusters get-credentials medi-staging-cluster \
+            --region "${GCP_REGION}" --project "${GCP_PROJECT_ID}" --internal-ip
+          mkdir -p "${RUNNER_TEMP}/k8s"
+          for file in k8s/*.yaml; do
+            envsubst < "${file}" > "${RUNNER_TEMP}/k8s/$(basename "${file}")"
+          done
+          kubectl apply -f "${RUNNER_TEMP}/k8s"
+          kubectl rollout status deployment/medi --timeout=10m
+      - name: Smoke test
+        run: |
+          kubectl port-forward service/medi 18080:80 &
+          port_forward_pid=$!
+          trap 'kill "${port_forward_pid}" 2>/dev/null || true' EXIT
+          curl --fail --retry 10 --retry-connrefused http://127.0.0.1:18080/healthz
+          curl --fail http://127.0.0.1:18080/readyz
+
+  deploy-production:
+    name: Deploy production
+    if: github.event_name == 'push'
+    needs: deploy-staging
+    runs-on: [self-hosted, linux, gcp-private]
+    environment: production
+    env:
+      ENVIRONMENT: production
+      DEPLOYMENT_REPLICAS: 3
+      HPA_MIN_REPLICAS: 3
+      HPA_MAX_REPLICAS: 10
+      PDB_MIN_AVAILABLE: 2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+      - name: Deploy with rollback
+        run: |
+          gcloud container clusters get-credentials medi-production-cluster \
+            --region "${GCP_REGION}" --project "${GCP_PROJECT_ID}" --internal-ip
+          mkdir -p "${RUNNER_TEMP}/k8s"
+          for file in k8s/*.yaml; do
+            envsubst < "${file}" > "${RUNNER_TEMP}/k8s/$(basename "${file}")"
+          done
+          if ! kubectl apply -f "${RUNNER_TEMP}/k8s" || \
+             ! kubectl rollout status deployment/medi --timeout=10m; then
+            kubectl rollout undo deployment/medi
+            kubectl rollout status deployment/medi --timeout=10m
+            exit 1
+          fi
